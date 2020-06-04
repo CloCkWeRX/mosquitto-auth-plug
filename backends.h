@@ -50,10 +50,10 @@
 # define __BACKENDS_H
 
 typedef void (f_kill)(void *conf);
-typedef int (f_getuser)(void *conf, const char *username, const char *password, char **phash);
+typedef int (f_getuser)(void *conf, const char *username, const char *password, char **phash, const char *clientid);
 typedef int (f_superuser)(void *conf, const char *username);
 typedef int (f_aclcheck)(void *conf, const char *clientid, const char *username, const char *topic, int acc);
 
-void t_expand(const char *clientid, const char *username, char *in, char **res);
+void t_expand(const char *clientid, const char *username, const char *in, char **res);
 
 #endif

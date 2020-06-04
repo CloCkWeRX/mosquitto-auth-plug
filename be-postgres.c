@@ -162,7 +162,7 @@ void be_pg_destroy(void *handle)
 	}
 }
 
-int be_pg_getuser(void *handle, const char *username, const char *password, char **phash)
+int be_pg_getuser(void *handle, const char *username, const char *password, char **phash, const char *clientid)
 {
 	struct pg_backend *conf = (struct pg_backend *)handle;
 	char *value = NULL, *v = NULL;
@@ -182,6 +182,12 @@ int be_pg_getuser(void *handle, const char *username, const char *password, char
 
 	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
 		_log(LOG_DEBUG, "%s\n", PQresultErrorMessage(res));
+		if(PQstatus(conf->conn) == CONNECTION_BAD){
+			_log(LOG_NOTICE, "Noticed a postgres connection loss. Trying to reconnect ...\n");
+			//try to reinitiate the database connection
+			PQreset(conf->conn);
+		}
+		
 		goto out;
 	}
 	if ((nrows = PQntuples(res)) != 1) {
@@ -194,7 +200,7 @@ int be_pg_getuser(void *handle, const char *username, const char *password, char
 	}
 	if ((v = PQgetvalue(res, 0, 0)) == NULL) {
 		goto out;
-	}
+	}	
 	value = (v) ? strdup(v) : NULL;
 
 
@@ -233,6 +239,13 @@ int be_pg_superuser(void *handle, const char *username)
 	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
 		fprintf(stderr, "%s\n", PQresultErrorMessage(res));
 		issuper = BACKEND_ERROR;
+		//try to reset connection if failing because of database connection lost
+		if(PQstatus(conf->conn) == CONNECTION_BAD){
+			_log(LOG_NOTICE, "Noticed a postgres connection loss. Trying to reconnect ...\n");
+			//try to reinitiate the database connection
+			PQreset(conf->conn);
+		}
+
 		goto out;
 	}
 	if ((nrows = PQntuples(res)) != 1) {
@@ -296,6 +309,14 @@ int be_pg_aclcheck(void *handle, const char *clientid, const char *username, con
 	if (PQresultStatus(res) != PGRES_TUPLES_OK) {
 		fprintf(stderr, "%s\n", PQresultErrorMessage(res));
 		match = BACKEND_ERROR;
+
+		//try to reset connection if failing because of database connection lost
+		if(PQstatus(conf->conn) == CONNECTION_BAD){
+			_log(LOG_NOTICE, "Noticed a postgres connection loss. Trying to reconnect ...\n");
+			//try to reinitiate the database connection
+			PQreset(conf->conn);
+		}
+
 		goto out;
 	}
 	if (PQnfields(res) != 1) {
@@ -389,7 +410,7 @@ int addKeyValue(char **keywords, char **values, char *key, char *value,
 	}
 
 	// Get length of dictionary
-	while (*(keywords + n) != '\0')
+	while (keywords[n] != NULL)
 	{
 		n++;
 	}
@@ -401,7 +422,7 @@ int addKeyValue(char **keywords, char **values, char *key, char *value,
 	}
 
 	// Check for dictionary end
-	if ((keywords[n] != '\0') || (values[n] != '\0')){
+	if ((keywords[n] != NULL) || (values[n] != NULL)){
 		// Dictionary wasn't initialized properly or it is the
 		// dictionaries end. --> Abort
 		return -2;
@@ -413,8 +434,8 @@ int addKeyValue(char **keywords, char **values, char *key, char *value,
 	n++;
 
 	// In case of not zero-terminated dictionary
-	keywords[n] = '\0';
-	values[n] = '\0';
+	keywords[n] = 0;
+	values[n] = 0;
 
 	return n;
 }

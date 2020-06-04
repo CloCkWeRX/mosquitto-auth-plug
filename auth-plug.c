@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <openssl/evp.h>
 #include <mosquitto.h>
+#include <mosquitto_broker.h>
 #include <mosquitto_plugin.h>
 #include <fnmatch.h>
 #include <time.h>
@@ -42,6 +43,10 @@
 #else
 # define MOSQ_DENY_AUTH	MOSQ_ERR_AUTH
 # define MOSQ_DENY_ACL	MOSQ_ERR_ACL_DENIED
+#endif
+
+#if MOSQ_AUTH_PLUGIN_VERSION >= 3
+# define mosquitto_auth_opt mosquitto_opt
 #endif
 
 #include "log.h"
@@ -136,6 +141,7 @@ int mosquitto_auth_plugin_init(void **userdata, struct mosquitto_auth_opt *auth_
 	ud->auth_cachejitter = 0;
 	ud->aclcache = NULL;
 	ud->authcache = NULL;
+	ud->clients = NULL;
 
 	/*
 	 * Shove all options Mosquitto gives the plugin into a hash,
@@ -492,7 +498,11 @@ int mosquitto_auth_security_cleanup(void *userdata, struct mosquitto_auth_opt *a
 }
 
 
+#if MOSQ_AUTH_PLUGIN_VERSION >=3
+int mosquitto_auth_unpwd_check(void *userdata, struct mosquitto *client, const char *username, const char *password)
+#else
 int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char *password)
+#endif
 {
 	struct userdata *ud = (struct userdata *)userdata;
 	struct backend_p **bep;
@@ -503,6 +513,23 @@ int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char 
 		return MOSQ_DENY_AUTH;
 
 	_log(LOG_DEBUG, "mosquitto_auth_unpwd_check(%s)", (username) ? username : "<nil>");
+
+#if MOSQ_AUTH_PLUGIN_VERSION >=3
+	struct cliententry *e;
+	HASH_FIND(hh, ud->clients, &client, sizeof(void *), e);
+	if (e) {
+		free(e->username);
+		free(e->clientid);
+		e->username = strdup(username);
+		e->clientid = strdup("client id not available");
+	} else {
+		e = (struct cliententry *)malloc(sizeof(struct cliententry));
+		e->key = (void *)client;
+		e->username = strdup(username);
+		e->clientid = strdup("client id not available");
+		HASH_ADD(hh, ud->clients, key, sizeof(void *), e);
+	}
+#endif
 
 	granted = auth_cache_q(username, password, userdata);
 	if (granted != MOSQ_ERR_UNKNOWN) {
@@ -525,7 +552,11 @@ int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char 
 			free(phash);
 			phash = NULL;
 		}
-		rc = b->getuser(b->conf, username, password, &phash);
+#if MOSQ_AUTH_PLUGIN_VERSION >=3	
+		rc = b->getuser(b->conf, username, password, &phash, mosquitto_client_id(client));
+#else
+		rc = b->getuser(b->conf, username, password, &phash, NULL);
+#endif
 		if (rc == BACKEND_ALLOW) {
 			backend_name = (*bep)->name;
 			authenticated = TRUE;
@@ -566,13 +597,39 @@ int mosquitto_auth_unpwd_check(void *userdata, const char *username, const char 
 	return granted;
 }
 
+#if MOSQ_AUTH_PLUGIN_VERSION >= 3
+int mosquitto_auth_acl_check(void *userdata, int access, struct mosquitto *client, const struct mosquitto_acl_msg *msg)
+#else
 int mosquitto_auth_acl_check(void *userdata, const char *clientid, const char *username, const char *topic, int access)
+#endif
 {
 	struct userdata *ud = (struct userdata *)userdata;
 	struct backend_p **bep;
 	char *backend_name = NULL;
 	int match = 0, authorized = FALSE, has_error = FALSE;
 	int granted = MOSQ_DENY_ACL;
+#if MOSQ_AUTH_PLUGIN_VERSION >= 3
+	struct cliententry *e;
+	const char *clientid = NULL;
+	const char *username = NULL;
+	const char *topic = msg->topic;
+	HASH_FIND(hh, ud->clients, &client, sizeof(void *), e);
+	if (e) {
+		clientid = e->clientid;
+		username = e->username;
+	} else {
+		bool client_cert = (mosquitto_client_certificate(client) != NULL);
+
+		if (client_cert == true) {
+			clientid = mosquitto_client_id(client);
+			username = mosquitto_client_username(client);
+		}
+
+		if (client_cert == false || clientid == NULL || username == NULL) {
+			return MOSQ_ERR_PLUGIN_DEFER;
+		}
+	}
+#endif
 
 	if (!username || !*username) { 	// anonymous users
 		username = ud->anonusername;
@@ -691,7 +748,11 @@ int mosquitto_auth_acl_check(void *userdata, const char *clientid, const char *u
 }
 
 
+#if MOSQ_AUTH_PLUGIN_VERSION >= 3
+int mosquitto_auth_psk_key_get(void *user_data, struct mosquitto *client, const char *hint, const char *identity, char *key, int max_key_len)
+#else
 int mosquitto_auth_psk_key_get(void *userdata, const char *hint, const char *identity, char *key, int max_key_len)
+#endif
 {
 #if BE_PSK
 	struct userdata *ud = (struct userdata *)userdata;
@@ -720,7 +781,7 @@ int mosquitto_auth_psk_key_get(void *userdata, const char *hint, const char *ide
 	} else if (rc == BACKEND_DENY) {
 		psk_found = FALSE;
 	} else {
-		_log(LOG_DEBUG, "psk_key_get(%s, %s) from [%s] finds PSK: %d",
+		_log(LOG_DEBUG, "psk_key_get(hint=%s, identity=%s) from [%s] finds PSK: %d",
 			hint, identity, database,
 			psk_key ? 1 : 0);
 
